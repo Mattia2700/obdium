@@ -214,7 +214,7 @@ impl OBD {
         }
 
         self.connection = serialport::new(port, baud_rate)
-            .timeout(Duration::from_secs(1))
+            .timeout(Duration::from_secs(3))
             .open()
             .ok();
 
@@ -262,64 +262,11 @@ impl OBD {
     }
 
     pub fn serial_port_baud_rate(&self) -> Option<u32> {
-        match &self.connection {
-            Some(connection) => connection.baud_rate().ok(),
-            None => None,
-        }
+        None
     }
 
-    pub fn get_open_serial_ports() -> Vec<String> {
-        let mut open_serial_ports = Vec::<String>::new();
-        match serialport::available_ports() {
-            Ok(ports) => {
-                ports.iter().for_each(|p| {
-                    let port_name = p.port_name.to_owned();
-                    let Ok(mut con) = serialport::new(&port_name, 38400)
-                        .timeout(Duration::from_millis(320))
-                        .open()
-                    else {
-                        return;
-                    };
-
-                    let _ = con.clear(serialport::ClearBuffer::All);
-                    if con.write_all(b"ATI\r").is_err() {
-                        return;
-                    }
-
-                    let mut buffer = [0u8; 1];
-                    let mut response = String::new();
-                    loop {
-                        match con.read(&mut buffer) {
-                            Ok(1) => {
-                                let byte = buffer[0];
-                                response.push(byte as char);
-                            }
-                            Ok(0) => std::thread::sleep(Duration::from_millis(10)),
-                            Ok(_) => break,
-                            Err(_) => break,
-                        }
-                    }
-
-                    let as_string = String::from_utf8_lossy(&buffer);
-                    let cleaned = as_string.trim_matches(|c: char| !c.is_ascii_graphic());
-
-                    println!(
-                        "- response from serial port: `{}` for port: {}",
-                        cleaned, port_name
-                    );
-
-                    if cleaned.ends_with('>') || cleaned.contains("ELM") {
-                        open_serial_ports.push(port_name);
-                    }
-                });
-            }
-            Err(err) => {
-                println!("error getting available serial ports: {err}");
-            }
-        }
-
-        println!("Ports: {:?}", open_serial_ports);
-        open_serial_ports
+    pub fn get_open_serial_port() -> String {
+        "/dev/rfcomm0".to_string()
     }
 
     pub fn init(&mut self) -> Result<(), Error> {
@@ -336,17 +283,16 @@ impl OBD {
         ];
 
         for mut command in commands {
-            // Cannot proceed with the initialization.
-            // Refer to above. Furthermore, if we don't send a command
-            // and read the buffer and then get junk values,
-            // the program will be messed up.
-            // Ensure the intiialization is 100% valid.
-
             let response = if self.replay_requests {
                 self.get_recorded_response(&command)
             } else {
                 self.send_command(&mut command)
                     .map_err(|_| Error::InitFailed)?;
+
+                if command.get_at() == b"ATZ" {
+                    sleep(Duration::from_secs(2));
+                }
+
                 self.get_at_response().map_err(|_| Error::InitFailed)?
             };
 
@@ -423,9 +369,6 @@ impl OBD {
             Some(stream) => stream,
             None => return Err(Error::NoConnection),
         };
-
-        let _ = stream.set_timeout(Duration::from_secs(1));
-        let _ = stream.clear(serialport::ClearBuffer::All);
 
         let mut cmd = req.as_bytes();
         if cmd.is_empty() {
@@ -647,9 +590,6 @@ impl OBD {
             Some(port) => port,
             None => return Err(Error::NoConnection),
         };
-
-        port.clear(serialport::ClearBuffer::All)
-            .map_err(|_| Error::ELM327ReadError)?;
 
         let mut buffer = [0u8; 1];
         let mut response = String::new();
